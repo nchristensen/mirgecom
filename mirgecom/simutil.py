@@ -1,14 +1,28 @@
 """Provide some utilities for building simulation applications.
 
+General utilities
+-----------------
+
 .. autofunction:: check_step
-.. autofunction:: inviscid_sim_timestep
-.. autoexception:: ExactSolutionMismatch
-.. autofunction:: sim_checkpoint
-.. autofunction:: create_parallel_grid
+.. autofunction:: get_sim_timestep
+.. autofunction:: write_visfile
+.. autofunction:: allsync
+
+Diagnostic utilities
+--------------------
+
+.. autofunction:: compare_fluid_solutions
+.. autofunction:: check_naninf_local
+.. autofunction:: check_range_local
+
+Mesh utilities
+--------------
+
+.. autofunction:: generate_and_distribute_mesh
 """
 
 __copyright__ = """
-Copyright (C) 2020 University of Illinois Board of Trustees
+Copyright (C) 2021 University of Illinois Board of Trustees
 """
 
 __license__ = """
@@ -30,15 +44,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 """
-
 import logging
-
 import numpy as np
-from meshmode.dof_array import thaw
-from mirgecom.io import make_status_message
-from mirgecom.euler import (
-    get_inviscid_timestep,
-)
+import grudge.op as op
 
 logger = logging.getLogger(__name__)
 
@@ -64,116 +72,196 @@ def check_step(step, interval):
     return False
 
 
-def inviscid_sim_timestep(discr, state, t, dt, cfl, eos,
-                          t_final, constant_cfl=False):
-    """Return the maximum stable dt."""
-    mydt = dt
-    if constant_cfl is True:
-        mydt = get_inviscid_timestep(discr=discr, q=state,
-                                     cfl=cfl, eos=eos)
-    if (t + mydt) > t_final:
-        mydt = t_final - t
-    return mydt
+def get_sim_timestep(discr, state, t, dt, cfl, eos,
+                     t_final, constant_cfl=False):
+    """Return the maximum stable timestep for a typical fluid simulation.
 
+    This routine returns *dt*, the users defined constant timestep, or *max_dt*, the
+    maximum domain-wide stability-limited timestep for a fluid simulation.
 
-class ExactSolutionMismatch(Exception):
-    """Exception class for solution mismatch.
+    .. important::
+        This routine calls the collective: :func:`~grudge.op.nodal_min` on the inside
+        which makes it domain-wide regardless of parallel domain decomposition. Thus
+        this routine must be called *collectively* (i.e. by all ranks).
 
-    .. attribute:: step
-    .. attribute:: t
-    .. attribute:: state
+    Two modes are supported:
+        - Constant DT mode: returns the minimum of (t_final-t, dt)
+        - Constant CFL mode: returns (cfl * max_dt)
+
+    Parameters
+    ----------
+    discr
+        Grudge discretization or discretization collection?
+    state: :class:`~mirgecom.fluid.ConservedVars`
+        The fluid state.
+    t: float
+        Current time
+    t_final: float
+        Final time
+    dt: float
+        The current timestep
+    cfl: float
+        The current CFL number
+    eos: :class:`~mirgecom.eos.GasEOS`
+        Gas equation-of-state optionally with a non-empty
+        :class:`~mirgecom.transport.TransportModel` for viscous transport properties.
+    constant_cfl: bool
+        True if running constant CFL mode
+
+    Returns
+    -------
+    float
+        The maximum stable DT based on a viscous fluid.
     """
+    t_remaining = max(0, t_final - t)
+    mydt = dt
+    if constant_cfl:
+        from mirgecom.viscous import get_viscous_timestep
+        from grudge.op import nodal_min
+        mydt = cfl * nodal_min(
+            discr, "vol",
+            get_viscous_timestep(discr=discr, eos=eos, cv=state)
+        )
+    return min(t_remaining, mydt)
 
-    def __init__(self, step, t, state):
-        """Record the simulation state on creation."""
-        self.step = step
-        self.t = t
-        self.state = state
 
+def write_visfile(discr, io_fields, visualizer, vizname,
+                  step=0, t=0, overwrite=False, vis_timer=None):
+    """Write VTK output for the fields specified in *io_fields*.
 
-def sim_checkpoint(discr, visualizer, eos, q, vizname, exact_soln=None,
-                   step=0, t=0, dt=0, cfl=1.0, nstatus=-1, nviz=-1, exittol=1e-16,
-                   constant_cfl=False, comm=None, overwrite=False):
-    """Check simulation health, status, viz dumps, and restart."""
-    # TODO: Add restart
-    do_viz = check_step(step=step, interval=nviz)
-    do_status = check_step(step=step, interval=nstatus)
-    if do_viz is False and do_status is False:
-        return 0
+    .. note::
+        This is a collective routine and must be called by all MPI ranks.
 
-    from mirgecom.euler import split_conserved
-    cv = split_conserved(discr.dim, q)
-    dependent_vars = eos.dependent_vars(cv)
+    Parameters
+    ----------
+    visualizer:
+        A :class:`meshmode.discretization.visualization.Visualizer`
+        VTK output object.
+    io_fields:
+        List of tuples indicating the (name, data) for each field to write.
+    """
+    from contextlib import nullcontext
+    from mirgecom.io import make_rank_fname, make_par_fname
 
+    comm = discr.mpi_communicator
     rank = 0
-    if comm is not None:
+
+    if comm:
         rank = comm.Get_rank()
 
-    maxerr = 0.0
-    if exact_soln is not None:
-        actx = cv.mass.array_context
-        nodes = thaw(actx, discr.nodes())
-        expected_state = exact_soln(t=t, x_vec=nodes, eos=eos)
-        exp_resid = q - expected_state
-        err_norms = [discr.norm(v, np.inf) for v in exp_resid]
-        maxerr = max(err_norms)
+    rank_fn = make_rank_fname(basename=vizname, rank=rank, step=step, t=t)
 
-    if do_viz:
-        io_fields = [
-            ("cv", cv),
-            ("dv", dependent_vars)
-        ]
-        if exact_soln is not None:
-            exact_list = [
-                ("exact_soln", expected_state),
-            ]
-            io_fields.extend(exact_list)
+    if rank == 0:
+        import os
+        viz_dir = os.path.dirname(rank_fn)
+        if viz_dir and not os.path.exists(viz_dir):
+            os.makedirs(viz_dir)
 
-        from mirgecom.io import make_rank_fname, make_par_fname
-        rank_fn = make_rank_fname(basename=vizname, rank=rank, step=step, t=t)
+    if comm:
+        comm.barrier()
+
+    if vis_timer:
+        ctm = vis_timer.start_sub_timer()
+    else:
+        ctm = nullcontext()
+
+    with ctm:
         visualizer.write_parallel_vtk_file(
-            comm, rank_fn, io_fields, overwrite=overwrite,
-            par_manifest_filename=make_par_fname(basename=vizname, step=step, t=t))
-
-    if do_status is True:
-        #        if constant_cfl is False:
-        #            current_cfl = get_inviscid_cfl(discr=discr, q=q,
-        #                                           eos=eos, dt=dt)
-        statusmesg = make_status_message(discr=discr, t=t, step=step, dt=dt,
-                                         cfl=cfl, dependent_vars=dependent_vars)
-        if exact_soln is not None:
-            statusmesg += (
-                "\n------- errors="
-                + ", ".join("%.3g" % en for en in err_norms))
-
-        if rank == 0:
-            logger.info(statusmesg)
-
-    if maxerr > exittol:
-        raise ExactSolutionMismatch(step, t=t, state=q)
+            comm, rank_fn, io_fields,
+            overwrite=overwrite,
+            par_manifest_filename=make_par_fname(
+                basename=vizname, step=step, t=t
+            )
+        )
 
 
-def create_parallel_grid(comm, generate_grid):
-    """Create and partition a grid.
+def allsync(local_values, comm=None, op=None):
+    """Perform allreduce if MPI comm is provided.
 
-    Create a grid with the user-supplied grid generation function
-    *generate_grid*, partition the grid, and distribute it to every
+    This routine is a convenience wrapper for the MPI AllReduce operation.
+    The common use case is to synchronize error indicators across all MPI
+    ranks. If an MPI communicator is not provided, the *local_values* is
+    simply returned.  The reduction operation must be an MPI-supported
+    reduction operation and it defaults to MPI.MAX.
+
+    .. note::
+        This is a collective routine and must be called by all MPI ranks.
+
+    Parameters
+    ----------
+    local_values: Any
+        The (MPI-compatible) value or collection of values on which the
+        reduction operation is to be performed.
+
+    comm: *MPI.Comm*
+        Optional parameter specifying the MPI communicator on which the
+        reduction operation (if any) is to be performed
+
+    op: *MPI.op*
+        Reduction operation to be performed. Defaults to *MPI.MAX*.
+
+    Returns
+    -------
+    Any ( like *local_values* )
+        Returns the result of the reduction operation on *local_values*
+    """
+    if comm is None:
+        return local_values
+    if op is None:
+        from mpi4py import MPI
+        op = MPI.MAX
+    return comm.allreduce(local_values, op=op)
+
+
+def check_range_local(discr, dd, field, min_value, max_value):
+    """Check for any negative values."""
+    return (
+        op.nodal_min_loc(discr, dd, field) < min_value
+        or op.nodal_max_loc(discr, dd, field) > max_value
+    )
+
+
+def check_naninf_local(discr, dd, field):
+    """Check for any NANs or Infs in the field."""
+    actx = field.array_context
+    s = actx.to_numpy(op.nodal_sum_loc(discr, dd, field))
+    return np.isnan(s) or (s == np.inf)
+
+
+def compare_fluid_solutions(discr, red_state, blue_state):
+    """Return inf norm of (*red_state* - *blue_state*) for each component.
+
+    .. note::
+        This is a collective routine and must be called by all MPI ranks.
+    """
+    resid = red_state - blue_state
+    return [discr.norm(v, np.inf) for v in resid.join()]
+
+
+def generate_and_distribute_mesh(comm, generate_mesh):
+    """Generate a mesh and distribute it among all ranks in *comm*.
+
+    Generate the mesh with the user-supplied mesh generation function
+    *generate_mesh*, partition the mesh, and distribute it to every
     rank in the provided MPI communicator *comm*.
+
+    .. note::
+        This is a collective routine and must be called by all MPI ranks.
 
     Parameters
     ----------
     comm:
-        MPI communicator over which to partition the grid
-    generate_grid:
+        MPI communicator over which to partition the mesh
+    generate_mesh:
         Callable of zero arguments returning a :class:`meshmode.mesh.Mesh`.
         Will only be called on one (undetermined) rank.
 
     Returns
     -------
     local_mesh : :class:`meshmode.mesh.Mesh`
-        The local partition of the the mesh returned by *generate_grid*.
+        The local partition of the the mesh returned by *generate_mesh*.
     global_nelements : :class:`int`
-        The number of elements in the serial grid
+        The number of elements in the serial mesh
     """
     from meshmode.distributed import (
         MPIMeshDistributor,
@@ -185,7 +273,7 @@ def create_parallel_grid(comm, generate_grid):
 
     if mesh_dist.is_mananger_rank():
 
-        mesh = generate_grid()
+        mesh = generate_mesh()
 
         global_nelements = mesh.nelements
 
@@ -197,3 +285,12 @@ def create_parallel_grid(comm, generate_grid):
         local_mesh = mesh_dist.receive_mesh_part()
 
     return local_mesh, global_nelements
+
+
+def create_parallel_grid(comm, generate_grid):
+    """Generate and distribute mesh compatibility interface."""
+    from warnings import warn
+    warn("Do not call create_parallel_grid; use generate_and_distribute_mesh "
+         "instead. This function will disappear August 1, 2021",
+         DeprecationWarning, stacklevel=2)
+    return generate_and_distribute_mesh(comm=comm, generate_mesh=generate_grid)

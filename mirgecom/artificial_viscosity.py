@@ -269,12 +269,13 @@ def smoothness_indicator(discr, u, kappa=1.0, s0=-6.0):
     actx = u.array_context
 
     @memoize_in(actx, (smoothness_indicator, "smooth_comp_knl"))
-    def indicator_prg():
+    def indicator_prg(ne, ndof, fp_format):
         """Compute the smoothness indicator for all elements."""
-        from arraycontext import make_loopy_program
+        from arraycontext import make_loopy_program, IsDOFArray, ParameterValue
         from meshmode.transform_metadata import (ConcurrentElementInameTag,
                                                  ConcurrentDOFInameTag)
         import loopy as lp
+
         t_unit = make_loopy_program([
             "{[iel]: 0 <= iel < nelements}",
             "{[idof]: 0 <= idof < ndiscr_nodes_in}",
@@ -289,6 +290,16 @@ def smoothness_indicator(discr, u, kappa=1.0, s0=-6.0):
                                              * vec[iel, jdof]             \
                                              + 1.0e-12 / ndiscr_nodes_in)
             """,
+            kernel_data=[
+                lp.GlobalArg("vec", dtype=fp_format, shape=lp.auto, strides=lp.auto, tags=[IsDOFArray()]),
+                lp.GlobalArg("result", dtype=fp_format, shape=lp.auto, strides=lp.auto, tags=[IsDOFArray()], is_output=True),
+                #lp.GlobalArg("vec", dtype=fp_format, shape=(ne,ndof), strides=lp.auto, tags=[IsDOFArray()]),
+                #lp.GlobalArg("result", dtype=fp_format, shape=(ne,ndof), strides=lp.auto, tags=[IsDOFArray()], is_output=True),
+                #lp.GlobalArg("modes_active_flag", dtype=np.int64, shape=(ndof,), strides=lp.auto),
+                #lp.ValueArg("nelements", tags=[ParameterValue(ne)]),
+                #lp.ValueArg("ndiscr_nodes_in", tags=[ParameterValue(ndof)]),
+                ...
+            ],
             name="smooth_comp",
         )
         return lp.tag_inames(t_unit, {"iel": ConcurrentElementInameTag(),
@@ -309,16 +320,31 @@ def smoothness_indicator(discr, u, kappa=1.0, s0=-6.0):
     uhat = modal_map(u)
 
     # Compute smoothness indicator value
+    data = []
+    for grp in discr.discr_from_dd("vol").groups:
+        ne, ndof = uhat[grp.index].shape
+        fp_format = uhat[grp.index].dtype
+        #print(highest_mode(grp).dtype)
+        data.append(actx.call_loopy(
+            indicator_prg(ne, ndof, fp_format),
+            vec=uhat[grp.index],
+            modes_active_flag=highest_mode(grp))["result"])
+
+    indicator = DOFArray(actx, data=tuple(data))
+
+    """
     indicator = DOFArray(
         actx,
         data=tuple(
             actx.call_loopy(
-                indicator_prg(),
+                indicator_prg(ne, ndof, fp_format),
                 vec=uhat[grp.index],
                 modes_active_flag=highest_mode(grp))["result"]
             for grp in discr.discr_from_dd("vol").groups
         )
     )
+    """
+
     indicator = actx.np.log10(indicator + 1.0e-12)
 
     # Compute artificial viscosity percentage based on indicator and set parameters

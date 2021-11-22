@@ -291,13 +291,13 @@ def smoothness_indicator(discr, u, kappa=1.0, s0=-6.0):
                                              + 1.0e-12 / ndiscr_nodes_in)
             """,
             kernel_data=[
-                lp.GlobalArg("vec", dtype=fp_format, shape=lp.auto, strides=lp.auto, tags=[IsDOFArray()]),
-                lp.GlobalArg("result", dtype=fp_format, shape=lp.auto, strides=lp.auto, tags=[IsDOFArray()], is_output=True),
-                #lp.GlobalArg("vec", dtype=fp_format, shape=(ne,ndof), strides=lp.auto, tags=[IsDOFArray()]),
-                #lp.GlobalArg("result", dtype=fp_format, shape=(ne,ndof), strides=lp.auto, tags=[IsDOFArray()], is_output=True),
-                #lp.GlobalArg("modes_active_flag", dtype=np.int64, shape=(ndof,), strides=lp.auto),
-                #lp.ValueArg("nelements", tags=[ParameterValue(ne)]),
-                #lp.ValueArg("ndiscr_nodes_in", tags=[ParameterValue(ndof)]),
+                #lp.GlobalArg("vec", dtype=fp_format, shape=lp.auto, strides=lp.auto, tags=[IsDOFArray()]),
+                #lp.GlobalArg("result", dtype=fp_format, shape=lp.auto, strides=lp.auto, tags=[IsDOFArray()], is_output=True),
+                lp.GlobalArg("vec", dtype=fp_format, shape=(ne,ndof), strides=lp.auto, tags=[IsDOFArray()]),
+                lp.GlobalArg("result", dtype=fp_format, shape=(ne,ndof), strides=lp.auto, tags=[IsDOFArray()], is_output=True),
+                lp.GlobalArg("modes_active_flag", dtype=np.int64, shape=(ndof,), strides=lp.auto),
+                lp.ValueArg("nelements", tags=[ParameterValue(ne)]),
+                lp.ValueArg("ndiscr_nodes_in", tags=[ParameterValue(ndof)]),
                 ...
             ],
             name="smooth_comp",

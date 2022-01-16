@@ -271,9 +271,9 @@ def smoothness_indicator(discr, u, kappa=1.0, s0=-6.0):
     @memoize_in(actx, (smoothness_indicator, "smooth_comp_knl"))
     def indicator_prg(ne, ndof, fp_format):
         """Compute the smoothness indicator for all elements."""
-        from arraycontext import make_loopy_program, IsDOFArray, ParameterValue
-        from meshmode.transform_metadata import (ConcurrentElementInameTag,
-                                                 ConcurrentDOFInameTag)
+        from arraycontext import make_loopy_program#, IsDOFArray, ParameterValue
+        from meshmode.transform_metadata import (IsDOFArray, ParameterValue, 
+            ConcurrentElementInameTag, ConcurrentDOFInameTag)
         import loopy as lp
 
         t_unit = make_loopy_program([

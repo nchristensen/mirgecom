@@ -12,6 +12,8 @@ Diagnostic utilities
 --------------------
 
 .. autofunction:: compare_fluid_solutions
+.. autofunction:: componentwise_norms
+.. autofunction:: max_component_norm
 .. autofunction:: check_naninf_local
 .. autofunction:: check_range_local
 .. autofunction:: boundary_report
@@ -48,7 +50,13 @@ THE SOFTWARE.
 import logging
 import numpy as np
 import grudge.op as op
-from numbers import Number
+
+from arraycontext import map_array_container, flatten
+
+from functools import partial
+
+from meshmode.dof_array import DOFArray
+
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +82,7 @@ def check_step(step, interval):
     return False
 
 
-def get_sim_timestep(discr, state, t, dt, cfl, eos,
-                     t_final, constant_cfl=False):
+def get_sim_timestep(discr, state, t, dt, cfl, t_final, constant_cfl=False):
     """Return the maximum stable timestep for a typical fluid simulation.
 
     This routine returns *dt*, the users defined constant timestep, or *max_dt*, the
@@ -94,8 +101,8 @@ def get_sim_timestep(discr, state, t, dt, cfl, eos,
     ----------
     discr
         Grudge discretization or discretization collection?
-    state: :class:`~mirgecom.fluid.ConservedVars`
-        The fluid state.
+    state: :class:`~mirgecom.gas_model.FluidState`
+        The full fluid conserved and thermal state
     t: float
         Current time
     t_final: float
@@ -104,9 +111,6 @@ def get_sim_timestep(discr, state, t, dt, cfl, eos,
         The current timestep
     cfl: float
         The current CFL number
-    eos: :class:`~mirgecom.eos.GasEOS`
-        Gas equation-of-state optionally with a non-empty
-        :class:`~mirgecom.transport.TransportModel` for viscous transport properties.
     constant_cfl: bool
         True if running constant CFL mode
 
@@ -123,7 +127,7 @@ def get_sim_timestep(discr, state, t, dt, cfl, eos,
         mydt = state.array_context.to_numpy(
             cfl * nodal_min(
                 discr, "vol",
-                get_viscous_timestep(discr=discr, eos=eos, cv=state)))[()]
+                get_viscous_timestep(discr=discr, state=state)))[()]
     return min(t_remaining, mydt)
 
 
@@ -188,8 +192,8 @@ def global_reduce(local_values, op, *, comm=None):
 
     Parameters
     ----------
-    local_values: numbers.Number or numpy.ndarray
-        The (MPI-compatible) value or array of values on which the
+    local_values:
+        The (:mod:`mpi4py`-compatible) value or array of values on which the
         reduction operation is to be performed.
 
     op: str
@@ -217,7 +221,7 @@ def global_reduce(local_values, op, *, comm=None):
         }
         return comm.allreduce(local_values, op=op_to_mpi_op[op])
     else:
-        if isinstance(local_values, Number):
+        if np.ndim(local_values) == 0:
             return local_values
         else:
             op_to_numpy_func = {
@@ -284,17 +288,41 @@ def check_naninf_local(discr, dd, field):
     return not np.isfinite(s)
 
 
-def compare_fluid_solutions(discr, red_state, blue_state, comm=None):
+def compare_fluid_solutions(discr, red_state, blue_state):
     """Return inf norm of (*red_state* - *blue_state*) for each component.
 
     .. note::
         This is a collective routine and must be called by all MPI ranks.
     """
     actx = red_state.array_context
-    resid = actx.np.abs(red_state - blue_state)
-    max_local_error = [actx.to_numpy(op.nodal_max_loc(discr, "vol", v))
-                       for v in resid.join()]
-    return allsync(max_local_error, comm=comm)
+    resid = red_state - blue_state
+    resid_errs = actx.to_numpy(
+        flatten(componentwise_norms(discr, resid, order=np.inf), actx))
+
+    return resid_errs.tolist()
+
+
+def componentwise_norms(discr, fields, order=np.inf):
+    """Return the *order*-norm for each component of *fields*.
+
+    .. note::
+        This is a collective routine and must be called by all MPI ranks.
+    """
+    if not isinstance(fields, DOFArray):
+        return map_array_container(
+            partial(componentwise_norms, discr, order=order), fields)
+    return discr.norm(fields, order)
+
+
+def max_component_norm(discr, fields, order=np.inf):
+    """Return the max *order*-norm over the components of *fields*.
+
+    .. note::
+        This is a collective routine and must be called by all MPI ranks.
+    """
+    actx = fields.array_context
+    return max(actx.to_numpy(flatten(
+        componentwise_norms(discr, fields, order), actx)))
 
 
 def generate_and_distribute_mesh(comm, generate_mesh):

@@ -9,10 +9,14 @@ currently implemented are the dynamic viscosity ($\mu$), the bulk viscosity
 ($\mu_{B}$), the thermal conductivity ($\kappa$), and the species diffusivities
 ($d_{\alpha}$).
 
-.. autoclass:: TransportDependentVars
+.. autoclass:: GasTransportVars
 .. autoclass:: TransportModel
 .. autoclass:: SimpleTransport
 .. autoclass:: PowerLawTransport
+
+Exceptions
+^^^^^^^^^^
+.. autoexception:: TransportModelError
 """
 
 __copyright__ = """
@@ -40,14 +44,22 @@ THE SOFTWARE.
 """
 
 from dataclasses import dataclass
+from arraycontext import dataclass_array_container
 import numpy as np
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from mirgecom.fluid import ConservedVars
 from mirgecom.eos import GasEOS
 
 
-@dataclass
-class TransportDependentVars:
+class TransportModelError(Exception):
+    """Indicate that transport model is required for model evaluation."""
+
+    pass
+
+
+@dataclass_array_container
+@dataclass(frozen=True)
+class GasTransportVars:
     """State-dependent quantities for :class:`TransportModel`.
 
     Prefer individual methods for model use, use this
@@ -77,6 +89,7 @@ class TransportModel:
     .. automethod:: thermal_conductivity
     .. automethod:: species_diffusivity
     .. automethod:: volume_viscosity
+    .. automethod:: transport_vars
     """
 
     def bulk_viscosity(self, eos: GasEOS, cv: ConservedVars):
@@ -98,6 +111,15 @@ class TransportModel:
     def species_diffusivity(self, eos: GasEOS, cv: ConservedVars):
         r"""Get the vector of species diffusivities, ${d}_{\alpha}$."""
         raise NotImplementedError()
+
+    def transport_vars(self, eos: GasEOS, cv: ConservedVars):
+        r"""Compute the transport properties from the conserved state."""
+        return GasTransportVars(
+            bulk_viscosity=self.bulk_viscosity(eos, cv),
+            viscosity=self.viscosity(eos, cv),
+            thermal_conductivity=self.thermal_conductivity(eos, cv),
+            species_diffusivity=self.species_diffusivity(eos, cv)
+        )
 
 
 class SimpleTransport(TransportModel):
@@ -126,11 +148,11 @@ class SimpleTransport(TransportModel):
 
     def bulk_viscosity(self, eos: GasEOS, cv: ConservedVars):
         r"""Get the bulk viscosity for the gas, $\mu_{B}$."""
-        return self._mu_bulk
+        return self._mu_bulk*(0*cv.mass + 1.0)
 
     def viscosity(self, eos: GasEOS, cv: ConservedVars):
         r"""Get the gas dynamic viscosity, $\mu$."""
-        return self._mu
+        return self._mu*(0*cv.mass + 1.0)
 
     def volume_viscosity(self, eos: GasEOS, cv: ConservedVars):
         r"""Get the 2nd viscosity coefficent, $\lambda$.
@@ -139,15 +161,15 @@ class SimpleTransport(TransportModel):
 
         $\lambda = \left(\mu_{B} - \frac{2\mu}{3}\right)$
         """
-        return self._mu_bulk - 2 * self._mu / 3
+        return (self._mu_bulk - 2 * self._mu / 3)*(0*cv.mass + 1.0)
 
     def thermal_conductivity(self, eos: GasEOS, cv: ConservedVars):
         r"""Get the gas thermal_conductivity, $\kappa$."""
-        return self._kappa
+        return self._kappa*(0*cv.mass + 1.0)
 
     def species_diffusivity(self, eos: GasEOS, cv: ConservedVars):
         r"""Get the vector of species diffusivities, ${d}_{\alpha}$."""
-        return self._d_alpha
+        return self._d_alpha*(0*cv.mass + 1.0)
 
 
 class PowerLawTransport(TransportModel):

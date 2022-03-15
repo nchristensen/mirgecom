@@ -2,11 +2,20 @@ import numpy as np
 import loopy as lp
 import grudge.loopy_dg_kernels as dgk
 import hjson
-from grudge.grudge_array_context import AutotuningArrayContext, unique_program_id, convert, set_memory_layout
-from grudge.loopy_dg_kernels.run_tests import exhaustive_search_v2, generic_test
+from grudge.grudge_array_context import AutotuningArrayContext, unique_program_id, set_memory_layout
+from grudge.loopy_dg_kernels.run_tests import exhaustive_search_v2, generic_test, convert
 from pytools import memoize_method
 
 class MirgecomAutotuningArrayContext(AutotuningArrayContext):
+
+    #@memoize_method
+    def get_generators(self, program):
+        if program.default_entrypoint.name == "smooth_comp":
+            tlist_generator = smooth_comp_tlist_generator
+            from grudge.loopy_dg_kernels.generators import gen_autotune_list as pspace_generator
+        else:
+            tlist_generator, pspace_generator = super().get_generators(program)
+        return tlist_generator, pspace_generator
 
     @memoize_method
     def transform_loopy_program(self, program):
@@ -18,7 +27,7 @@ class MirgecomAutotuningArrayContext(AutotuningArrayContext):
         #device_id = "NVIDIA Titan V"
 
         # These are the most compute intensive kernels
-        to_optimize = {}#{"smooth_comp"}
+        to_optimize = {} #{"smooth_comp"}
         if program.default_entrypoint.name in to_optimize:
             print(program)
             for arg in program.default_entrypoint.args:
@@ -52,7 +61,11 @@ class MirgecomAutotuningArrayContext(AutotuningArrayContext):
             except FileNotFoundError as e:
                 
                 search_fn = exhaustive_search_v2#random_search
+                tlist_generator, pspace_generator = self.get_generators(program)
+                transformations = self.autotune_and_save(self.queue, program, search_fn,
+                                      tlist_generator, pspace_generator, hjson_file_str)
 
+                """
                 # Maybe the generators should be classes so we can use inheritance.
                 if program.default_entrypoint.name == "smooth_comp":
                     tlist_generator = smooth_comp_tlist_generator                    
@@ -64,6 +77,7 @@ class MirgecomAutotuningArrayContext(AutotuningArrayContext):
                 out_file = open(hjson_file_str, "wt+")
                 hjson.dump(od, out_file,default=convert)
                 out_file.close()
+                """
 
             program = dgk.apply_transformation_list(program, transformations)
         else:

@@ -57,6 +57,7 @@ class MirgecomAutotuningArrayContext(AutotuningArrayContext):
                 transformations = dgk.load_transformations_from_file(hjson_file,
                     ["transformations"])
                 hjson_file.close()
+                print("LOCATED TRANSFORMATION:", hjson_file_str)
 
             except FileNotFoundError as e:
                 

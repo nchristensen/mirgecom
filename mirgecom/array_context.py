@@ -5,6 +5,7 @@ import hjson
 from grudge.grudge_array_context import AutotuningArrayContext, unique_program_id, set_memory_layout
 from grudge.loopy_dg_kernels.run_tests import exhaustive_search_v2, generic_test, convert
 from pytools import memoize_method
+import os
 
 # Meshmode and Grudge kernels to autotune
 autotuned_kernels = {"einsum3to2_kernel",

@@ -6,6 +6,18 @@ from grudge.grudge_array_context import AutotuningArrayContext, unique_program_i
 from grudge.loopy_dg_kernels.run_tests import exhaustive_search_v2, generic_test, convert
 from pytools import memoize_method
 
+# Meshmode and Grudge kernels to autotune
+autotuned_kernels = {"einsum3to2_kernel",
+                     "einsum4to2_kernel",
+                     "einsum5to3_kernel",
+                     "einsum2to2_kernel",
+                     "diff",
+                     "lp_nodes",
+                     "grudge_elementwise_sum_knl",
+                     #"resample_by_picking_group", # Will require implementing a special testing function
+                     "smooth_comp" } # This last one is a mirgecom kernel. Should probably have some class variable.
+
+
 class MirgecomAutotuningArrayContext(AutotuningArrayContext):
 
     #@memoize_method

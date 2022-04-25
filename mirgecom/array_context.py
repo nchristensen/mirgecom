@@ -2,10 +2,12 @@ import numpy as np
 import loopy as lp
 import grudge.loopy_dg_kernels as dgk
 import hjson
-from grudge.grudge_array_context import AutotuningArrayContext, unique_program_id, set_memory_layout
+from grudge.grudge_array_context import (AutotuningArrayContext, unique_program_id, set_memory_layout,
+    fix_program_parameters)
 from grudge.loopy_dg_kernels.run_tests import exhaustive_search_v2, generic_test, convert
 from pytools import memoize_method
 import os
+from typing import Optional
 
 # Meshmode and Grudge kernels to autotune
 autotuned_kernels = {"einsum3to2_kernel",
@@ -148,25 +150,42 @@ def smooth_comp_tlist_generator(params, **kwargs):
 
 
 class MirgecomKernelSavingAutotuningArrayContext(MirgecomAutotuningArrayContext):
+
+    def __init__(self,
+            mpi_communicator,
+            queue: "pyopencl.CommandQueue",
+            *, allocator: Optional["pyopencl.tools.AllocatorInterface"] = None,
+            wait_event_queue_length: Optional[int] = None,
+            force_device_scalars: bool = False,
+            save_dir: str = "./pickled_programs") -> None:
+
+        # Currently placed in cwd
+        self.save_dir = save_dir
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        super().__init__(mpi_communicator, queue, allocator=allocator,
+            wait_event_queue_length=wait_event_queue_length,
+            force_device_scalars=force_device_scalars)
+
     def transform_loopy_program(self, program):
 
         if program.default_entrypoint.name in autotuned_kernels:
             import pickle
             # Set no_numpy and return_dict options here?
-            program = set_memory_layout(program, order="F")
 
             print("====CALCULATING PROGRAM ID====")
-            filename = "./pickled_programs"
+            #program = fix_program_parameters(program)
+            program = set_memory_layout(program, order="F")
             pid = unique_program_id(program)
         
             # Is there a way to obtain the current rank?
-            file_path = f"{filename}/{program.default_entrypoint.name}_{pid}.pickle"
+            file_path = f"{self.save_dir}/{program.default_entrypoint.name}_{pid}.pickle"
             hjson_path = f"hjson/{program.default_entrypoint.name}_{pid}.hjson"
             from os.path import exists
             
             if not exists(file_path):
                 # For some reason this doesn't create the directory
-                os.makedirs(os.path.dirname(filename), exist_ok=True)
+                #os.makedirs(filename, exist_ok=True)
                 print(program.default_entrypoint)
                 print("====WRITING PROGRAM TO FILE===", file_path)
                 out_file = open(file_path, "wb")
@@ -179,12 +198,14 @@ class MirgecomKernelSavingAutotuningArrayContext(MirgecomAutotuningArrayContext)
                 pid2 = unique_program_id(loaded)
                 print(pid, pid2)
                 assert pid == pid2
-                print("DUMPED PICKLED FILE. EXITING - RUN THE AUTOTUNER")
+                print("DUMPED PICKLED KERNEL TO FILE.")
+                #exit()
             elif exists(hjson_path): # Use the transformations
+                print("LOADING TRANFORMATIONS FROM FILE")
                 program = super().transform_loopy_program(program)
             else:
                 print("PICKLED FILE ALREADY EXISTS. RUN THE AUTOTUNER.", file_path)
-                exit()
+                #exit()
         else:
             program = super().transform_loopy_program(program)
 

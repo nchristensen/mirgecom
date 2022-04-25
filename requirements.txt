@@ -13,8 +13,8 @@ pyyaml
 --editable git+https://github.com/inducer/pymbolic.git#egg=pymbolic
 #--editable git+https://github.com/inducer/pyopencl.git#egg=pyopencl
 #--editable git+https://github.com/kaushikcfd/loopy.git@pytato-array-context-transforms#egg=loopy
-#--editable git+https://github.com/loopy/loopy.git@more-0-strides-fixes#egg=loopy
---editable git+https://github.com/loopy/loopy.git@#egg=loopy
+--editable git+https://github.com/loopy/loopy.git@more-0-strides-fixing#egg=loopy
+#--editable git+https://github.com/loopy/loopy.git@#egg=loopy
 --editable git+https://github.com/inducer/dagrt.git#egg=dagrt
 --editable git+https://github.com/inducer/leap.git#egg=leap
 --editable git+https://github.com/inducer/modepy.git#egg=modepy

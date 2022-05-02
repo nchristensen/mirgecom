@@ -97,15 +97,15 @@ THE SOFTWARE.
 import numpy as np
 
 from pytools import memoize_in, keyed_memoize_in
-
+from functools import partial
 from meshmode.dof_array import thaw, DOFArray
 
 from mirgecom.flux import gradient_flux_central, divergence_flux_central
 from mirgecom.operators import div_operator, grad_operator
 
 from grudge.trace_pair import (
-    TracePair,
-    interior_trace_pairs
+    interior_trace_pairs,
+    tracepair_with_discr_tag
 )
 from grudge.dof_desc import (
     DOFDesc,
@@ -171,14 +171,7 @@ def av_laplacian_operator(discr, boundaries, fluid_state, alpha,
     def interp_to_vol_quad(u):
         return op.project(discr, "vol", dd_vol, u)
 
-    def interp_to_surf_quad(utpair):
-        local_dd = utpair.dd
-        local_dd_quad = local_dd.with_discr_tag(quadrature_tag)
-        return TracePair(
-            local_dd_quad,
-            interior=op.project(discr, local_dd, local_dd_quad, utpair.int),
-            exterior=op.project(discr, local_dd, local_dd_quad, utpair.ext)
-        )
+    interp_to_surf_quad = partial(tracepair_with_discr_tag, discr, quadrature_tag)
 
     # Get smoothness indicator based on mass component
     kappa = kwargs.get("kappa", 1.0)
@@ -195,7 +188,7 @@ def av_laplacian_operator(discr, boundaries, fluid_state, alpha,
 
     cv_bnd = (
         # Rank-local and cross-rank (across parallel partitions) contributions
-        + sum(central_flux(interp_to_surf_quad(tpair))
+        + sum(central_flux(interp_to_surf_quad(tpair=tpair))
               for tpair in interior_trace_pairs(discr, cv, tag=_AVCVTag))
         # Contributions from boundary fluxes
         + sum(boundaries[btag].soln_gradient_flux(
@@ -219,7 +212,7 @@ def av_laplacian_operator(discr, boundaries, fluid_state, alpha,
     # Total flux of grad(Q) across element boundaries
     r_bnd = (
         # Rank-local and cross-rank (across parallel partitions) contributions
-        + sum(central_flux_div(interp_to_surf_quad(tpair))
+        + sum(central_flux_div(interp_to_surf_quad(tpair=tpair))
               for tpair in interior_trace_pairs(discr, r, tag=_AVRTag))
         # Contributions from boundary fluxes
         + sum(boundaries[btag].av_flux(
@@ -310,31 +303,51 @@ def smoothness_indicator(discr, u, kappa=1.0, s0=-6.0):
     uhat = modal_map(u)
 
     # Compute smoothness indicator value
-    data = []
-    for grp in discr.discr_from_dd("vol").groups:
-        ne, ndof = uhat[grp.index].shape
-        fp_format = uhat[grp.index].dtype
-        #print(highest_mode(grp).dtype)
-        data.append(actx.call_loopy(
-            indicator_prg(ne, ndof, fp_format),
-            vec=uhat[grp.index],
-            modes_active_flag=highest_mode(grp))["result"])
-
-    indicator = DOFArray(actx, data=tuple(data))
-
-    """
-    indicator = DOFArray(
-        actx,
-        data=tuple(
-            actx.call_loopy(
+    if actx.supports_nonscalar_broadcasting:
+        from meshmode.transform_metadata import DiscretizationDOFAxisTag
+        indicator = DOFArray(
+            actx,
+            data=tuple(
+                actx.tag_axis(
+                    1,
+                    DiscretizationDOFAxisTag(),
+                    actx.np.broadcast_to(
+                        ((actx.einsum("ek,k->e",
+                                      uhat[grp.index]**2,
+                                      highest_mode(grp))
+                          / (actx.einsum("ej->e",
+                                         (uhat[grp.index]**2+(1e-12/grp.nunit_dofs))
+                                         )))
+                         .reshape(-1, 1)),
+                        uhat[grp.index].shape))
+                for grp in discr.discr_from_dd("vol").groups
+            )
+        )
+    else:
+        data = []
+        for grp in discr.discr_from_dd("vol").groups:
+            ne, ndof = uhat[grp.index].shape
+            fp_format = uhat[grp.index].dtype
+            data.append(actx.call_loopy(
                 indicator_prg(ne, ndof, fp_format),
                 vec=uhat[grp.index],
-                modes_active_flag=highest_mode(grp))["result"]
-            for grp in discr.discr_from_dd("vol").groups
-        )
-    )
-    """
+                modes_active_flag=highest_mode(grp))["result"])
 
+        indicator = DOFArray(actx, data=tuple(data))
+
+        """
+        indicator = DOFArray(
+            actx,
+            data=tuple(
+                actx.call_loopy(
+                    indicator_prg(),
+                    vec=uhat[grp.index],
+                    modes_active_flag=highest_mode(grp)
+                )["result"]
+                for grp in discr.discr_from_dd("vol").groups
+            )
+        )
+        """
     indicator = actx.np.log10(indicator + 1.0e-12)
 
     # Compute artificial viscosity percentage based on indicator and set parameters

@@ -61,7 +61,8 @@ from functools import partial
 
 from grudge.trace_pair import (
     TracePair,
-    interior_trace_pairs
+    interior_trace_pairs,
+    tracepair_with_discr_tag
 )
 from grudge.dof_desc import DOFDesc, as_dofdesc, DISCR_TAG_BASE
 
@@ -69,13 +70,13 @@ import grudge.op as op
 
 from mirgecom.inviscid import (
     inviscid_flux,
-    inviscid_flux_rusanov,
-    inviscid_boundary_flux_for_divergence_operator
+    inviscid_facial_flux_rusanov,
+    inviscid_flux_on_element_boundary
 )
 from mirgecom.viscous import (
     viscous_flux,
     viscous_flux_central,
-    viscous_boundary_flux_for_divergence_operator
+    viscous_flux_on_element_boundary
 )
 from mirgecom.flux import (
     gradient_flux_central
@@ -268,7 +269,7 @@ def grad_t_operator(
 
 
 def ns_operator(discr, gas_model, state, boundaries, *, time=0.0,
-                inviscid_numerical_flux_func=inviscid_flux_rusanov,
+                inviscid_numerical_flux_func=inviscid_facial_flux_rusanov,
                 gradient_numerical_flux_func=gradient_flux_central,
                 viscous_numerical_flux_func=viscous_flux_central,
                 quadrature_tag=DISCR_TAG_BASE, return_gradients=False,
@@ -334,14 +335,7 @@ def ns_operator(discr, gas_model, state, boundaries, *, time=0.0,
     # {{{ Local utilities
 
     # transfer trace pairs to quad grid, update pair dd
-    def _interp_to_surf_quad(utpair):
-        local_dd = utpair.dd
-        local_dd_quad = local_dd.with_discr_tag(quadrature_tag)
-        return TracePair(
-            local_dd_quad,
-            interior=op.project(discr, local_dd, local_dd_quad, utpair.int),
-            exterior=op.project(discr, local_dd, local_dd_quad, utpair.ext)
-        )
+    interp_to_surf_quad = partial(tracepair_with_discr_tag, discr, quadrature_tag)
 
     # }}}
 
@@ -355,11 +349,10 @@ def ns_operator(discr, gas_model, state, boundaries, *, time=0.0,
             operator_states_quad=operator_states_quad)
 
     # Communicate grad(CV) and put it on the quadrature domain
-    # FIXME/ReviewQuestion: communicate grad_cv - already on quadrature dom?
     grad_cv_interior_pairs = [
         # Get the interior trace pairs onto the surface quadrature
         # discretization (if any)
-        _interp_to_surf_quad(tpair)
+        interp_to_surf_quad(tpair=tpair)
         for tpair in interior_trace_pairs(discr, grad_cv, tag=_NSGradCVTag)
     ]
 
@@ -378,7 +371,7 @@ def ns_operator(discr, gas_model, state, boundaries, *, time=0.0,
     grad_t_interior_pairs = [
         # Get the interior trace pairs onto the surface quadrature
         # discretization (if any)
-        _interp_to_surf_quad(tpair)
+        interp_to_surf_quad(tpair=tpair)
         for tpair in interior_trace_pairs(discr, grad_t, tag=_NSGradTemperatureTag)
     ]
 
@@ -405,14 +398,14 @@ def ns_operator(discr, gas_model, state, boundaries, *, time=0.0,
     bnd_term = (
 
         # All surface contributions from the viscous fluxes
-        viscous_boundary_flux_for_divergence_operator(
+        viscous_flux_on_element_boundary(
             discr, gas_model, boundaries, inter_elem_bnd_states_quad,
             domain_bnd_states_quad, grad_cv, grad_cv_interior_pairs,
             grad_t, grad_t_interior_pairs, quadrature_tag=quadrature_tag,
             numerical_flux_func=viscous_numerical_flux_func, time=time)
 
         # All surface contributions from the inviscid fluxes
-        - inviscid_boundary_flux_for_divergence_operator(
+        - inviscid_flux_on_element_boundary(
             discr, gas_model, boundaries, inter_elem_bnd_states_quad,
             domain_bnd_states_quad, quadrature_tag=quadrature_tag,
             numerical_flux_func=inviscid_numerical_flux_func, time=time)

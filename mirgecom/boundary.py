@@ -54,7 +54,6 @@ from arraycontext import thaw
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 from mirgecom.fluid import make_conserved
 from grudge.trace_pair import TracePair
-from mirgecom.inviscid import inviscid_flux_rusanov
 from mirgecom.viscous import viscous_flux_central
 from mirgecom.flux import (
     gradient_flux_central,
@@ -64,6 +63,8 @@ from mirgecom.gas_model import (
     make_fluid_state,
     project_fluid_state,
 )
+from mirgecom.inviscid import inviscid_facial_flux_rusanov
+
 from abc import ABCMeta, abstractmethod
 
 
@@ -77,25 +78,155 @@ class FluidBoundary(metaclass=ABCMeta):
     """
 
     @abstractmethod
-    def inviscid_divergence_flux(self, discr, btag, eos, cv_minus, dv_minus,
+    def inviscid_divergence_flux(self, discr, btag, gas_model, state_minus,
                                  numerical_flux_func, **kwargs):
-        """Get the inviscid boundary flux for the divergence operator."""
+        """Get the inviscid boundary flux for the divergence operator.
+
+        This routine returns the facial flux used in the divergence
+        of the inviscid fluid transport flux.
+
+        Parameters
+        ----------
+        discr: :class:`~grudge.eager.EagerDGDiscretization`
+
+            A discretization collection encapsulating the DG elements
+
+        state_minus: :class:`~mirgecom.gas_model.FluidState`
+
+            Fluid state object with the conserved state, and dependent
+            quantities for the (-) side of the boundary specified by
+            *btag*.
+
+        gas_model: :class:`~mirgecom.gas_model.GasModel`
+
+            Physical gas model including equation of state, transport,
+            and kinetic properties as required by fluid state
+
+        numerical_flux_func:
+
+            Function should return the numerical flux corresponding to
+            the divergence of the inviscid transport flux. This function
+            is typically backed by an approximate Riemann solver, such as
+            :func:`~mirgecom.inviscid.inviscid_flux_rusanov`.
+
+        Returns
+        -------
+        :class:`mirgecom.fluid.ConservedVars`
+        """
 
     @abstractmethod
     def viscous_divergence_flux(self, discr, btag, gas_model, state_minus,
                                 grad_cv_minus, grad_t_minus, **kwargs):
-        """Get the viscous boundary flux for the divergence operator."""
+        """Get the viscous boundary flux for the divergence operator.
+
+        This routine returns the facial flux used in the divergence
+        of the viscous fluid transport flux.
+
+        Parameters
+        ----------
+        discr: :class:`~grudge.eager.EagerDGDiscretization`
+
+            A discretization collection encapsulating the DG elements
+
+        state_minus: :class:`~mirgecom.gas_model.FluidState`
+
+            Fluid state object with the conserved state, and dependent
+            quantities for the (-) side of the boundary specified
+            by *btag*.
+
+        grad_cv_minus: :class:`~mirgecom.fluid.ConservedVars`
+
+            The gradient of the conserved quantities on the (-) side
+            of the boundary specified by *btag*.
+
+        grad_t_minus: numpy.ndarray
+
+            The gradient of the fluid temperature on the (-) side
+            of the boundary specified by *btag*.
+
+        gas_model: :class:`~mirgecom.gas_model.GasModel`
+
+            Physical gas model including equation of state, transport,
+            and kinetic properties as required by fluid state
+
+        numerical_flux_func:
+
+            Function should return the numerical flux corresponding to
+            the divergence of the viscous transport flux. This function
+            is typically backed by a helper, such as
+            :func:`~mirgecom.inviscid.viscous_flux_central`.
+
+        Returns
+        -------
+        :class:`mirgecom.fluid.ConservedVars`
+        """
 
     @abstractmethod
     def cv_gradient_flux(self, discr, btag, gas_model, state_minus, **kwargs):
-        """Get the fluid soln boundary flux for the gradient operator."""
+        """Get the boundary flux for the gradient of the fluid conserved variables.
+
+        This routine returns the facial flux used by the gradient operator to
+        compute the gradient of the fluid solution on a domain boundary.
+
+        Parameters
+        ----------
+        discr: :class:`~grudge.eager.EagerDGDiscretization`
+
+            A discretization collection encapsulating the DG elements
+
+        state_minus: :class:`~mirgecom.gas_model.FluidState`
+
+            Fluid state object with the conserved state, and dependent
+            quantities for the (-) side of the boundary specified by
+            *btag*.
+
+        gas_model: :class:`~mirgecom.gas_model.GasModel`
+
+            Physical gas model including equation of state, transport,
+            and kinetic properties as required by fluid state
+
+        Returns
+        -------
+        :class:`mirgecom.fluid.ConservedVars`
+        """
 
     @abstractmethod
     def temperature_gradient_flux(self, discr, btag, gas_model, state_minus,
                                   **kwargs):
-        r"""Get temperature flux across the boundary faces."""
+        """Get the boundary flux for the gradient of the fluid temperature.
+
+        This method returns the boundary flux to be used by the gradient
+        operator when computing the gradient of the fluid temperature at a
+        domain boundary.
+
+        Parameters
+        ----------
+        discr: :class:`~grudge.eager.EagerDGDiscretization`
+
+            A discretization collection encapsulating the DG elements
+
+        state_minus: :class:`~mirgecom.gas_model.FluidState`
+
+            Fluid state object with the conserved state, and dependent
+            quantities for the (-) side of the boundary specified by
+            *btag*.
+
+        gas_model: :class:`~mirgecom.gas_model.GasModel`
+
+            Physical gas model including equation of state, transport,
+            and kinetic properties as required by fluid state
+
+        Returns
+        -------
+        numpy.ndarray
+        """
 
 
+# This class is a FluidBoundary that provides default implementations of
+# the abstract methods in FluidBoundary. This class will be eliminated
+# by resolution of https://github.com/illinois-ceesd/mirgecom/issues/576.
+# TODO: Don't do this. Make every boundary condition implement its own
+# version of the FluidBoundary methods.
 class PrescribedFluidBoundary(FluidBoundary):
     r"""Abstract interface to a prescribed fluid boundary treatment.
 
@@ -177,13 +308,12 @@ class PrescribedFluidBoundary(FluidBoundary):
         if not self._bnd_grad_temperature_func:
             self._bnd_grad_temperature_func = self._identical_grad_temperature
 
-    def _boundary_quantity(self, discr, btag, quantity, **kwargs):
+    def _boundary_quantity(self, discr, btag, quantity, local=False, **kwargs):
         """Get a boundary quantity on local boundary, or projected to "all_faces"."""
+        if local:
+            return quantity
         from grudge.dof_desc import as_dofdesc
         btag = as_dofdesc(btag)
-        if "local" in kwargs:
-            if kwargs["local"]:
-                return quantity
         return discr.project(btag, btag.with_dtag("all_faces"), quantity)
 
     def _boundary_state_pair(self, discr, btag, gas_model, state_minus, **kwargs):
@@ -193,7 +323,14 @@ class PrescribedFluidBoundary(FluidBoundary):
                                                        gas_model=gas_model,
                                                        state_minus=state_minus,
                                                        **kwargs))
+    # The following methods provide default implementations of the fluid
+    # boundary functions and helpers in an effort to eliminate much
+    # repeated code. They will be eliminated by the resolution of
+    # https://github.com/illinois-ceesd/mirgecom/issues/576.
 
+    # {{{ Default boundary helpers
+
+    # Returns temperature(+) for boundaries that prescribe CV(+)
     def _temperature_for_prescribed_state(self, discr, btag,
                                           gas_model, state_minus, **kwargs):
         boundary_state = self._bnd_state_func(discr=discr, btag=btag,
@@ -215,6 +352,8 @@ class PrescribedFluidBoundary(FluidBoundary):
     def _identical_grad_temperature(self, grad_t_minus, **kwargs):
         return grad_t_minus
 
+    # Returns the flux to be used by the gradient operator when computing the
+    # gradient of the fluid solution on boundaries that prescribe CV(+).
     def _gradient_flux_for_prescribed_cv(self, discr, btag, gas_model, state_minus,
                                          **kwargs):
         # Use prescribed external state and gradient numerical flux function
@@ -232,6 +371,8 @@ class PrescribedFluidBoundary(FluidBoundary):
             discr, btag=btag,
             quantity=self._grad_num_flux_func(cv_pair, nhat), **kwargs)
 
+    # Returns the flux to be used by the gradient operator when computing the
+    # gradient of fluid temperature using prescribed fluid temperature(+).
     def _gradient_flux_for_prescribed_temperature(self, discr, btag, gas_model,
                                                   state_minus, **kwargs):
         # Feed a boundary temperature to numerical flux for grad op
@@ -246,9 +387,12 @@ class PrescribedFluidBoundary(FluidBoundary):
                                        self._grad_num_flux_func(bnd_tpair, nhat),
                                        **kwargs)
 
+    # Returns the flux to be used by the divergence operator when computing the
+    # divergence of inviscid fluid transport flux using the boundary's
+    # prescribed CV(+).
     def _inviscid_flux_for_prescribed_state(
             self, discr, btag, gas_model, state_minus,
-            numerical_flux_func=inviscid_flux_rusanov, **kwargs):
+            numerical_flux_func=inviscid_facial_flux_rusanov, **kwargs):
         # Use a prescribed boundary state and the numerical flux function
         boundary_state_pair = self._boundary_state_pair(discr=discr, btag=btag,
                                                         gas_model=gas_model,
@@ -264,6 +408,9 @@ class PrescribedFluidBoundary(FluidBoundary):
                                  local=True),
             **kwargs)
 
+    # Returns the flux to be used by the divergence operator when computing the
+    # divergence of viscous fluid transport flux using the boundary's
+    # prescribed CV(+).
     def _viscous_flux_for_prescribed_state(self, discr, btag, gas_model, state_minus,
                                            grad_cv_minus, grad_t_minus,
                                            numerical_flux_func=viscous_flux_central,
@@ -293,9 +440,11 @@ class PrescribedFluidBoundary(FluidBoundary):
                                          grad_cv_pair=grad_cv_pair,
                                          grad_t_pair=grad_t_pair))
 
-    def inviscid_divergence_flux(
-            self, discr, btag, gas_model, state_minus,
-            numerical_flux_func=inviscid_flux_rusanov, **kwargs):
+    # }}} Default boundary helpers
+
+    def inviscid_divergence_flux(self, discr, btag, gas_model, state_minus,
+                                 numerical_flux_func=inviscid_facial_flux_rusanov,
+                                 **kwargs):
         """Get the inviscid boundary flux for the divergence operator."""
         return self._inviscid_flux_func(discr, btag, gas_model, state_minus,
                                         numerical_flux_func=numerical_flux_func,
@@ -830,7 +979,7 @@ class IsothermalWallBoundary(PrescribedFluidBoundary):
                                 temperature_seed=state_minus.temperature)
 
     def inviscid_wall_flux(self, discr, btag, gas_model, state_minus,
-            numerical_flux_func=inviscid_flux_rusanov, **kwargs):
+            numerical_flux_func=inviscid_facial_flux_rusanov, **kwargs):
         """Return Riemann flux using state with mom opposite of interior state."""
         wall_cv = make_conserved(dim=state_minus.dim,
                                  mass=state_minus.mass_density,
@@ -948,7 +1097,7 @@ class AdiabaticNoslipWallBoundary(PrescribedFluidBoundary):
                                 temperature_seed=state_minus.temperature)
 
     def inviscid_wall_flux(self, discr, btag, gas_model, state_minus,
-            numerical_flux_func=inviscid_flux_rusanov, **kwargs):
+            numerical_flux_func=inviscid_facial_flux_rusanov, **kwargs):
         """Return Riemann flux using state with mom opposite of interior state."""
         wall_state = self.adiabatic_wall_state_for_advection(
             discr, btag, gas_model, state_minus)
@@ -1085,7 +1234,7 @@ class SymmetryBoundary(PrescribedFluidBoundary):
                                 temperature_seed=state_minus.temperature)
 
     def inviscid_wall_flux(self, discr, btag, gas_model, state_minus,
-            numerical_flux_func=inviscid_flux_rusanov, **kwargs):
+            numerical_flux_func=inviscid_facial_flux_rusanov, **kwargs):
         """Return Riemann flux using state with mom opposite of interior state."""
         wall_state = self.adiabatic_wall_state_for_advection(
             discr, btag, gas_model, state_minus)

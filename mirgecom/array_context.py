@@ -8,6 +8,7 @@ from grudge.loopy_dg_kernels.run_tests import exhaustive_search_v2, generic_test
 from pytools import memoize_method
 import os
 from typing import Optional
+import pickle
 
 # Meshmode and Grudge kernels to autotune
 autotuned_kernels = {"einsum3to2_kernel",
@@ -148,6 +149,70 @@ def smooth_comp_tlist_generator(params, **kwargs):
     trans_list.append(["add_inames_for_unused_hw_axes"]) 
     return trans_list 
 
+"""
+# Import fails if lazy not enabled
+from grudge.array_context import MPIFusionContractorArrayContext
+class MPIKernelSavingFusionContractorArrayContext(MPIFusionContractorArrayContext):
+
+    def __init__(self,
+            mpi_communicator,
+            queue: "pyopencl.CommandQueue",
+            mpi_base_tag,
+            *,
+            allocator: Optional["pyopencl.tools.AllocatorInterface"] = None,
+            #wait_event_queue_length: Optional[int] = None,
+            #force_device_scalars: bool = False,
+            save_dir: str = "./pickled_programs") -> None:
+
+        # Currently placed in cwd
+        self.save_dir = save_dir
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        super().__init__(mpi_communicator, queue, mpi_base_tag, allocator=allocator)
+            #wait_event_queue_length=wait_event_queue_length,
+            #force_device_scalars=force_device_scalars)
+
+    def transform_loopy_program(self, program):
+
+        # Set no_numpy and return_dict options here?
+        print("====CALCULATING PROGRAM ID====")
+        #program = fix_program_parameters(program)
+        #program = set_memory_layout(program, order="C")
+        pid = unique_program_id(program)
+    
+        # Is there a way to obtain the current rank?
+        file_path = f"{self.save_dir}/{program.default_entrypoint.name}_{pid}.pickle"
+        hjson_path = f"hjson/{program.default_entrypoint.name}_{pid}.hjson"
+        from os.path import exists
+        
+        if not exists(file_path):
+            # For some reason this doesn't create the directory
+            #os.makedirs(filename, exist_ok=True)
+            print(program.default_entrypoint)
+            print("====WRITING PROGRAM TO FILE===", file_path)
+            out_file = open(file_path, "wb")
+            pickle.dump(program, out_file)
+            out_file.close()
+            print("====READING PROGRAM FROM FILE===", file_path)
+            f = open(file_path, "rb")
+            loaded = pickle.load(f)
+            f.close()
+            pid2 = unique_program_id(loaded)
+            print(pid, pid2)
+            assert pid == pid2
+            print("DUMPED PICKLED KERNEL TO FILE.")
+            #exit()
+        elif exists(hjson_path): # Use the transformations
+            print("LOADING TRANFORMATIONS FROM FILE")
+            program = super().transform_loopy_program(program)
+        else:
+            print("PICKLED FILE ALREADY EXISTS. RUN THE AUTOTUNER.", file_path)
+            #exit()
+
+        program = super().transform_loopy_program(program)
+
+        return program
+"""
 
 class MirgecomKernelSavingAutotuningArrayContext(MirgecomAutotuningArrayContext):
 
@@ -170,7 +235,6 @@ class MirgecomKernelSavingAutotuningArrayContext(MirgecomAutotuningArrayContext)
     def transform_loopy_program(self, program):
 
         if program.default_entrypoint.name in autotuned_kernels:
-            import pickle
             # Set no_numpy and return_dict options here?
 
             print("====CALCULATING PROGRAM ID====")

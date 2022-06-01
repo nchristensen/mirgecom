@@ -17,7 +17,7 @@ where:
    ,J_{\alpha}]$
 -  viscous stress tensor $\mathbf{\tau} = \mu(\nabla\mathbf{v}+(\nabla\mathbf{v})^T)
    + (\mu_B - \frac{2}{3}\mu)(\nabla\cdot\mathbf{v})$
--  diffusive flux for each species $J_\alpha = \rho{D}_{\alpha}\nabla{Y}_{\alpha}$
+-  diffusive flux for each species $J_\alpha = -\rho{D}_{\alpha}\nabla{Y}_{\alpha}$
 -  total heat flux $\mathbf{q}=\mathbf{q}_c+\mathbf{q}_d$, is the sum of:
     -  conductive heat flux $\mathbf{q}_c = -\kappa\nabla{T}$
     -  diffusive heat flux $\mathbf{q}_d = \sum{h_{\alpha} J_{\alpha}}$
@@ -75,12 +75,11 @@ from mirgecom.inviscid import (
 )
 from mirgecom.viscous import (
     viscous_flux,
-    viscous_flux_central,
+    viscous_facial_flux_central,
     viscous_flux_on_element_boundary
 )
-from mirgecom.flux import (
-    gradient_flux_central
-)
+from mirgecom.flux import num_flux_central
+
 from mirgecom.operators import (
     div_operator, grad_operator
 )
@@ -99,16 +98,17 @@ class _NSGradTemperatureTag:
 
 def _gradient_flux_interior(discr, numerical_flux_func, tpair):
     """Compute interior face flux for gradient operator."""
+    from arraycontext import outer
     actx = tpair.int.array_context
     dd = tpair.dd
     normal = thaw(discr.normal(dd), actx)
-    flux = numerical_flux_func(tpair, normal)
+    flux = outer(numerical_flux_func(tpair.int, tpair.ext), normal)
     return op.project(discr, dd, dd.with_dtag("all_faces"), flux)
 
 
 def grad_cv_operator(
         discr, gas_model, boundaries, state, *, time=0.0,
-        numerical_flux_func=gradient_flux_central,
+        numerical_flux_func=num_flux_central,
         quadrature_tag=DISCR_TAG_BASE,
         # Added to avoid repeated computation
         # FIXME: See if there's a better way to do this
@@ -133,16 +133,21 @@ def grad_cv_operator(
         Physical gas model including equation of state, transport,
         and kinetic properties as required by fluid state
 
+    numerical_flux_func:
+
+       Optional callable function to return the numerical flux to be used when
+       computing gradients. Defaults to :class:`~mirgecom.flux.num_flux_central`.
+
     quadrature_tag
         An identifier denoting a particular quadrature discretization to use during
         operator evaluations.
 
     Returns
     -------
-    :class:`numpy.ndarray`
+    :class:`~mirgecom.fluid.ConservedVars`
 
-        Array of :class:`~mirgecom.fluid.ConservedVars` representing the
-        gradient of the fluid conserved variables.
+        CV object with vector components representing the gradient of the fluid
+        conserved variables.
     """
     dd_vol_quad = DOFDesc("vol", quadrature_tag)
     dd_faces_quad = DOFDesc("all_faces", quadrature_tag)
@@ -165,15 +170,18 @@ def grad_cv_operator(
     cv_flux_bnd = (
 
         # Domain boundaries
-        sum(bdry.cv_gradient_flux(
-            discr,
-            # Make sure we get the state on the quadrature grid
-            # restricted to the tag *btag*
-            as_dofdesc(btag).with_discr_tag(quadrature_tag),
-            gas_model=gas_model,
-            state_minus=domain_bnd_states_quad[btag],
-            time=time,
-            numerical_flux_func=numerical_flux_func)
+        sum(op.project(
+            discr, as_dofdesc(btag).with_discr_tag(quadrature_tag),
+            as_dofdesc(btag).with_discr_tag(quadrature_tag).with_dtag("all_faces"),
+            bdry.cv_gradient_flux(
+                discr,
+                # Make sure we get the state on the quadrature grid
+                # restricted to the tag *btag*
+                as_dofdesc(btag).with_discr_tag(quadrature_tag),
+                gas_model=gas_model,
+                state_minus=domain_bnd_states_quad[btag],
+                time=time,
+                numerical_flux_func=numerical_flux_func))
             for btag, bdry in boundaries.items())
 
         # Interior boundaries
@@ -187,7 +195,7 @@ def grad_cv_operator(
 
 def grad_t_operator(
         discr, gas_model, boundaries, state, *, time=0.0,
-        numerical_flux_func=gradient_flux_central,
+        numerical_flux_func=num_flux_central,
         quadrature_tag=DISCR_TAG_BASE,
         # Added to avoid repeated computation
         # FIXME: See if there's a better way to do this
@@ -211,6 +219,11 @@ def grad_t_operator(
 
         Physical gas model including equation of state, transport,
         and kinetic properties as required by fluid state
+
+    numerical_flux_func:
+
+       Optional callable function to return the numerical flux to be used when
+       computing gradients. Defaults to :class:`~mirgecom.flux.num_flux_central`.
 
     quadrature_tag
         An identifier denoting a particular quadrature discretization to use during
@@ -236,7 +249,7 @@ def grad_t_operator(
     get_interior_flux = partial(
         _gradient_flux_interior, discr, numerical_flux_func)
 
-    # Temperature gradient for conductive heat flux: [Ihme_2014]_ eqn (3b)
+    # Temperature gradient for conductive heat flux: [Ihme_2014]_ eqn (4c)
     # Capture the temperature for the interior faces for grad(T) calc
     # Note this is *all interior faces*, including partition boundaries
     # due to the use of *interior_state_pairs*.
@@ -248,15 +261,18 @@ def grad_t_operator(
     t_flux_bnd = (
 
         # Domain boundaries
-        sum(bdry.temperature_gradient_flux(
-            discr,
-            # Make sure we get the state on the quadrature grid
-            # restricted to the tag *btag*
-            as_dofdesc(btag).with_discr_tag(quadrature_tag),
-            gas_model=gas_model,
-            state_minus=domain_bnd_states_quad[btag],
-            time=time,
-            numerical_flux_func=numerical_flux_func)
+        sum(op.project(
+            discr, as_dofdesc(btag).with_discr_tag(quadrature_tag),
+            as_dofdesc(btag).with_discr_tag(quadrature_tag).with_dtag("all_faces"),
+            bdry.temperature_gradient_flux(
+                discr,
+                # Make sure we get the state on the quadrature grid
+                # restricted to the tag *btag*
+                as_dofdesc(btag).with_discr_tag(quadrature_tag),
+                gas_model=gas_model,
+                state_minus=domain_bnd_states_quad[btag],
+                time=time,
+                numerical_flux_func=numerical_flux_func))
             for btag, bdry in boundaries.items())
 
         # Interior boundaries
@@ -270,8 +286,8 @@ def grad_t_operator(
 
 def ns_operator(discr, gas_model, state, boundaries, *, time=0.0,
                 inviscid_numerical_flux_func=inviscid_facial_flux_rusanov,
-                gradient_numerical_flux_func=gradient_flux_central,
-                viscous_numerical_flux_func=viscous_flux_central,
+                gradient_numerical_flux_func=num_flux_central,
+                viscous_numerical_flux_func=viscous_facial_flux_central,
                 quadrature_tag=DISCR_TAG_BASE, return_gradients=False,
                 # Added to avoid repeated computation
                 # FIXME: See if there's a better way to do this
@@ -297,9 +313,46 @@ def ns_operator(discr, gas_model, state, boundaries, *, time=0.0,
         Physical gas model including equation of state, transport,
         and kinetic properties as required by fluid state
 
+    inviscid_numerical_flux_func:
+        Optional callable function providing the face-normal flux to be used
+        for the divergence of the inviscid transport flux.  This defaults to
+        :func:`~mirgecom.inviscid.inviscid_facial_flux_rusanov`.
+
+    viscous_numerical_flux_func:
+        Optional callable function providing the face-normal flux to be used
+        for the divergence of the viscous transport flux.  This defaults to
+        :func:`~mirgecom.viscous.viscous_facial_flux_central`.
+
+    gradient_numerical_flux_func:
+       Optional callable function to return the numerical flux to be used when
+       computing gradients in the Navier-Stokes operator.
+
     quadrature_tag
         An identifier denoting a particular quadrature discretization to use during
         operator evaluations.
+
+    operator_states_quad
+        Optional iterable container providing the full fluid states
+        (:class:`~mirgecom.gas_model.FluidState`) on the quadrature
+        domain (if any) on each of the volume, internal faces tracepairs
+        (including partition boundaries), and minus side of domain boundary faces.
+        If this data structure is not provided, it will be calculated with
+        :func:`~mirgecom.gas_model.make_operator_fluid_states`.
+
+    grad_cv: :class:`~mirgecom.fluid.ConservedVars`
+        Optional CV object containing the gradient of the fluid conserved quantities.
+        If not provided, the operator will calculate it with
+        :func:`~mirgecom.navierstokes.grad_cv_operator`
+
+    grad_t: numpy.ndarray
+        Optional array containing the gradient of the fluid temperature. If not
+        provided, the operator will calculate it with
+        :func:`~mirgecom.navierstokes.grad_t_operator`.
+
+    return_gradients
+        Optional boolean (defaults to false) indicating whether to return
+        $\nabla(\text{CV})$ and $\nabla(T)$ along with the RHS for the Navier-Stokes
+        equations.  Useful for debugging and visualization.
 
     Returns
     -------

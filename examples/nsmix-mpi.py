@@ -215,7 +215,7 @@ def main(ctx_factory=cl.create_some_context, use_logmgr=True,
     cantera_soln = cantera.Solution(phase_id="gas", source=mech_cti)
     nspecies = cantera_soln.n_species
 
-    # Initial temperature, pressure, and mixutre mole fractions are needed to
+    # Initial temperature, pressure, and mixture mole fractions are needed to
     # set up the initial state in Cantera.
     init_temperature = 1500.0  # Initial temperature hot enough to burn
     # Parameters for calculating the amounts of fuel, oxidizer, and inert species
@@ -290,14 +290,15 @@ def main(ctx_factory=cl.create_some_context, use_logmgr=True,
     def _get_temperature_update(cv, temperature):
         y = cv.species_mass_fractions
         e = gas_model.eos.internal_energy(cv) / cv.mass
-        return pyrometheus_mechanism.get_temperature_update_energy(e, temperature, y)
+        return actx.np.abs(
+            pyrometheus_mechanism.get_temperature_update_energy(e, temperature, y))
 
     def _get_fluid_state(cv, temp_seed):
         return make_fluid_state(cv=cv, gas_model=gas_model,
                                 temperature_seed=temp_seed)
 
-    compute_temperature_update = actx.compile(_get_temperature_update)
-    construct_fluid_state = actx.compile(_get_fluid_state)
+    get_temperature_update = actx.compile(_get_temperature_update)
+    get_fluid_state = actx.compile(_get_fluid_state)
 
     tseed = can_t
     if rst_filename:
@@ -314,7 +315,7 @@ def main(ctx_factory=cl.create_some_context, use_logmgr=True,
         current_cv = initializer(x_vec=nodes, eos=gas_model.eos)
         tseed = tseed * ones
 
-    current_state = construct_fluid_state(current_cv, tseed)
+    current_state = get_fluid_state(current_cv, tseed)
 
     # Inspection at physics debugging time
     if debug:
@@ -452,18 +453,10 @@ def main(ctx_factory=cl.create_some_context, use_logmgr=True,
             logger.info(f"Temperature range violation ({t_min=}, {t_max=})")
 
         # This check is the temperature convergence check
-        # The current *temperature* is what Pyrometheus gets
-        # after a fixed number of Newton iterations, *n_iter*.
-        # Calling `compute_temperature` here with *temperature*
-        # input as the guess returns the calculated gas temperature after
-        # yet another *n_iter*.
-        # The difference between those two temperatures is the
-        # temperature residual, which can be used as an indicator of
-        # convergence in Pyrometheus `get_temperature`.
         # Note: The local max jig below works around a very long compile
         # in lazy mode.
         from grudge import op
-        temp_resid = compute_temperature_update(cv, dv.temperature) / dv.temperature
+        temp_resid = get_temperature_update(cv, dv.temperature) / dv.temperature
         temp_err = (actx.to_numpy(op.nodal_max_loc(discr, "vol", temp_resid)))
         if temp_err > 1e-8:
             health_error = True
@@ -473,7 +466,7 @@ def main(ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def my_pre_step(step, t, dt, state):
         cv, tseed = state
-        fluid_state = construct_fluid_state(cv, tseed)
+        fluid_state = get_fluid_state(cv, tseed)
         dv = fluid_state.dv
         try:
 
@@ -526,7 +519,7 @@ def main(ctx_factory=cl.create_some_context, use_logmgr=True,
 
     def my_post_step(step, t, dt, state):
         cv, tseed = state
-        fluid_state = construct_fluid_state(cv, tseed)
+        fluid_state = get_fluid_state(cv, tseed)
 
         # Logmgr needs to know about EOS, dt, dim?
         # imo this is a design/scope flaw
@@ -538,10 +531,28 @@ def main(ctx_factory=cl.create_some_context, use_logmgr=True,
         return make_obj_array([cv, fluid_state.temperature]), dt
 
     flux_beta = .25
-    from mirgecom.viscous import viscous_flux_central
-    from mirgecom.flux import gradient_flux_central
-    grad_num_flux_func = partial(gradient_flux_central, beta=flux_beta)
-    viscous_num_flux_func = partial(viscous_flux_central, beta=-flux_beta)
+
+    from mirgecom.viscous import viscous_flux
+    from mirgecom.flux import num_flux_central
+
+    def _num_flux_dissipative(u_minus, u_plus, beta):
+        return num_flux_central(u_minus, u_plus) + beta*(u_plus - u_minus)/2
+
+    def _viscous_facial_flux_dissipative(discr, state_pair, grad_cv_pair,
+                                         grad_t_pair, beta=0., gas_model=None):
+        actx = state_pair.int.array_context
+        normal = thaw(discr.normal(state_pair.dd), actx)
+
+        f_int = viscous_flux(state_pair.int, grad_cv_pair.int,
+                             grad_t_pair.int)
+        f_ext = viscous_flux(state_pair.ext, grad_cv_pair.ext,
+                             grad_t_pair.ext)
+
+        return _num_flux_dissipative(f_int, f_ext, beta=beta)@normal
+
+    grad_num_flux_func = partial(_num_flux_dissipative, beta=flux_beta)
+    viscous_num_flux_func = partial(_viscous_facial_flux_dissipative,
+                                    beta=-flux_beta)
 
     def my_rhs(t, state):
         cv, tseed = state
@@ -572,7 +583,7 @@ def main(ctx_factory=cl.create_some_context, use_logmgr=True,
         logger.info("Checkpointing final state ...")
 
     current_cv, tseed = current_stepper_state
-    current_state = construct_fluid_state(current_cv, tseed)
+    current_state = get_fluid_state(current_cv, tseed)
     final_dv = current_state.dv
     final_dt = get_sim_timestep(discr, current_state, current_t, current_dt,
                                 current_cfl, t_final, constant_cfl)

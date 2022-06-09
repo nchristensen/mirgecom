@@ -3,7 +3,7 @@ import loopy as lp
 import grudge.loopy_dg_kernels as dgk
 import hjson
 from grudge.grudge_array_context import (AutotuningArrayContext, unique_program_id, set_memory_layout,
-    fix_program_parameters)
+    fix_program_parameters, COrderedAutotuningArrayContext)
 from grudge.loopy_dg_kernels.run_tests import exhaustive_search_v2, generic_test, convert
 from pytools import memoize_method
 import os
@@ -20,6 +20,88 @@ autotuned_kernels = {"einsum3to2_kernel",
                      "grudge_elementwise_sum_knl",
                      #"resample_by_picking_group", # Will require implementing a special testing function
                      "smooth_comp" } # This last one is a mirgecom kernel. Should probably have some class variable.
+
+class COrderedMirgecomAutotuningArrayContext(COrderedAutotuningArrayContext):
+
+    #@memoize_method
+    def get_generators(self, program):
+        if program.default_entrypoint.name == "smooth_comp":
+            tlist_generator = smooth_comp_tlist_generator
+            from grudge.loopy_dg_kernels.generators import gen_autotune_list as pspace_generator
+        else:
+            tlist_generator, pspace_generator = super().get_generators(program)
+        return tlist_generator, pspace_generator
+
+    @memoize_method
+    def transform_loopy_program(self, program):
+
+        # Really just need to add metadata to the hjson file
+        # Could convert the kernel itself to base 64 and store it
+        # in the hjson file
+        # TODO: Dynamically determine device id,
+        #device_id = "NVIDIA Titan V"
+
+        # These are the most compute intensive kernels
+        to_optimize = {} #{"smooth_comp"}
+        if program.default_entrypoint.name in to_optimize:
+            print(program)
+            for arg in program.default_entrypoint.args:
+                print(arg.tags)
+            exit()
+
+        # Meshmode and Grudge kernels to autotune
+        autotuned_kernels = {"smooth_comp"}
+
+        if program.default_entrypoint.name in autotuned_kernels:
+            print(program.default_entrypoint.name)
+            print(program)
+
+            # Set no_numpy and return_dict options here?
+            program = lp.set_options(program, lp.Options(no_numpy=True, return_dict=True))
+            program = set_memory_layout(program, order="C")
+            pid = unique_program_id(program)
+            print(pid)
+            hjson_file_str = f"hjson/{program.default_entrypoint.name}_{pid}.hjson"
+
+            try:
+                # Attempt to read from a transformation file in the current directory first,
+                # then try to read from the package files - this is not currently implemented
+                # Maybe should have ability to search in arbitrary specified directories.
+
+                hjson_file = open(hjson_file_str, "rt")
+                transformations = dgk.load_transformations_from_file(hjson_file,
+                    ["transformations"])
+                hjson_file.close()
+                print("LOCATED TRANSFORMATION:", hjson_file_str)
+
+            except FileNotFoundError as e:
+                
+                search_fn = exhaustive_search_v2#random_search
+                tlist_generator, pspace_generator = self.get_generators(program)
+                transformations = self.autotune_and_save(self.queue, program, search_fn,
+                                      tlist_generator, pspace_generator, hjson_file_str)
+
+                """
+                # Maybe the generators should be classes so we can use inheritance.
+                if program.default_entrypoint.name == "smooth_comp":
+                    tlist_generator = smooth_comp_tlist_generator                    
+                    from grudge.loopy_dg_kernels.generators import gen_autotune_list as pspace_generator
+                avg_time, transformations, data = search_fn(self.queue, program, generic_test, 
+                                                pspace_generator, tlist_generator, time_limit=np.inf)
+
+                od = {"transformations": transformations}
+                out_file = open(hjson_file_str, "wt+")
+                hjson.dump(od, out_file,default=convert)
+                out_file.close()
+                """
+
+            program = dgk.apply_transformation_list(program, transformations)
+        else:
+            program = super().transform_loopy_program(program)
+
+        return program
+
+
 
 
 class MirgecomAutotuningArrayContext(AutotuningArrayContext):
@@ -59,7 +141,7 @@ class MirgecomAutotuningArrayContext(AutotuningArrayContext):
 
             # Set no_numpy and return_dict options here?
             program = lp.set_options(program, lp.Options(no_numpy=True, return_dict=True))
-            program = set_memory_layout(program)
+            program = set_memory_layout(program, order="F")
             pid = unique_program_id(program)
             print(pid)
             hjson_file_str = f"hjson/{program.default_entrypoint.name}_{pid}.hjson"
@@ -240,6 +322,68 @@ class MirgecomKernelSavingAutotuningArrayContext(MirgecomAutotuningArrayContext)
             print("====CALCULATING PROGRAM ID====")
             #program = fix_program_parameters(program)
             program = set_memory_layout(program, order="F")
+            pid = unique_program_id(program)
+        
+            # Is there a way to obtain the current rank?
+            file_path = f"{self.save_dir}/{program.default_entrypoint.name}_{pid}.pickle"
+            hjson_path = f"hjson/{program.default_entrypoint.name}_{pid}.hjson"
+            from os.path import exists
+            
+            if not exists(file_path):
+                # For some reason this doesn't create the directory
+                #os.makedirs(filename, exist_ok=True)
+                print(program.default_entrypoint)
+                print("====WRITING PROGRAM TO FILE===", file_path)
+                out_file = open(file_path, "wb")
+                pickle.dump(program, out_file)
+                out_file.close()
+                print("====READING PROGRAM FROM FILE===", file_path)
+                f = open(file_path, "rb")
+                loaded = pickle.load(f)
+                f.close()
+                pid2 = unique_program_id(loaded)
+                print(pid, pid2)
+                assert pid == pid2
+                print("DUMPED PICKLED KERNEL TO FILE.")
+                #exit()
+            elif exists(hjson_path): # Use the transformations
+                print("LOADING TRANFORMATIONS FROM FILE")
+                program = super().transform_loopy_program(program)
+            else:
+                print("PICKLED FILE ALREADY EXISTS. RUN THE AUTOTUNER.", file_path)
+                #exit()
+        else:
+            program = super().transform_loopy_program(program)
+
+        return program
+
+
+class COrderedMirgecomKernelSavingAutotuningArrayContext(COrderedMirgecomAutotuningArrayContext):
+
+    def __init__(self,
+            mpi_communicator,
+            queue: "pyopencl.CommandQueue",
+            *, allocator: Optional["pyopencl.tools.AllocatorInterface"] = None,
+            wait_event_queue_length: Optional[int] = None,
+            force_device_scalars: bool = False,
+            save_dir: str = "./pickled_programs") -> None:
+
+        # Currently placed in cwd
+        self.save_dir = save_dir
+        os.makedirs(self.save_dir, exist_ok=True)
+
+        super().__init__(mpi_communicator, queue, allocator=allocator,
+            wait_event_queue_length=wait_event_queue_length,
+            force_device_scalars=force_device_scalars)
+
+    def transform_loopy_program(self, program):
+
+        if program.default_entrypoint.name in autotuned_kernels:
+            # Set no_numpy and return_dict options here?
+
+            print("====CALCULATING PROGRAM ID====")
+            #program = fix_program_parameters(program)
+            program = set_memory_layout(program, order="C")
             pid = unique_program_id(program)
         
             # Is there a way to obtain the current rank?

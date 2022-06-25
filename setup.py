@@ -41,6 +41,7 @@ def main():
           python_requires="~=3.8",
 
           install_requires=[
+              "numpy<=1.22"
               "mpi4py>=3",
               "pymetis",
               "pytest>=2.3",

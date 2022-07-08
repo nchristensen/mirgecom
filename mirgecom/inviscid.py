@@ -40,7 +40,7 @@ THE SOFTWARE.
 """
 
 import numpy as np
-from arraycontext import thaw
+import grudge.op as op
 from mirgecom.fluid import make_conserved
 
 
@@ -235,7 +235,7 @@ def inviscid_flux_on_element_boundary(
 
     Parameters
     ----------
-    discr: :class:`~grudge.eager.EagerDGDiscretization`
+    discr: :class:`~grudge.discretization.DiscretizationCollection`
         A discretization collection encapsulating the DG elements
 
     gas_model: :class:`~mirgecom.gas_model.GasModel`
@@ -265,14 +265,14 @@ def inviscid_flux_on_element_boundary(
     from grudge.dof_desc import as_dofdesc
 
     def _interior_flux(state_pair):
-        return discr.project(
+        return op.project(discr,
             state_pair.dd, state_pair.dd.with_dtag("all_faces"),
             numerical_flux_func(
                 state_pair, gas_model,
-                thaw(discr.normal(state_pair.dd), state_pair.int.array_context)))
+                state_pair.int.array_context.thaw(discr.normal(state_pair.dd))))
 
     def _boundary_flux(dd_bdry, boundary, state_minus):
-        return discr.project(
+        return op.project(discr,
             dd_bdry, dd_bdry.with_dtag("all_faces"),
             boundary.inviscid_divergence_flux(
                 discr, dd_bdry, gas_model, state_minus=state_minus,
@@ -303,7 +303,7 @@ def get_inviscid_timestep(discr, state):
 
     Parameters
     ----------
-    discr: grudge.eager.EagerDGDiscretization
+    discr: grudge.discretization.DiscretizationCollection
 
         the discretization to use
 
@@ -329,7 +329,7 @@ def get_inviscid_cfl(discr, state, dt):
 
     Parameters
     ----------
-    discr: :class:`~grudge.eager.EagerDGDiscretization`
+    discr: :class:`~grudge.discretization.DiscretizationCollection`
 
         the discretization to use
 

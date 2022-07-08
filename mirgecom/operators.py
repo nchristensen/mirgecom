@@ -36,7 +36,7 @@ def grad_operator(discr, dd_vol, dd_faces, u, flux):
 
     Parameters
     ----------
-    discr: grudge.eager.EagerDGDiscretization
+    discr: grudge.discretization.DiscretizationCollection
         the discretization to use
     dd_vol: grudge.dof_desc.DOFDesc
         the degree-of-freedom tag associated with the volume discretization.
@@ -56,10 +56,10 @@ def grad_operator(discr, dd_vol, dd_faces, u, flux):
     meshmode.dof_array.DOFArray or numpy.ndarray
         the dg gradient operator applied to *u*
     """
-    return -discr.inverse_mass(
+    # pylint: disable=invalid-unary-operand-type
+    return - op.inverse_mass(discr,
         op.weak_local_grad(discr, dd_vol, u)
-        - op.face_mass(discr, dd_faces, flux)
-    )
+        - op.face_mass(discr, dd_faces, flux))
 
 
 def div_operator(discr, dd_vol, dd_faces, v, flux):
@@ -67,7 +67,7 @@ def div_operator(discr, dd_vol, dd_faces, v, flux):
 
     Parameters
     ----------
-    discr: grudge.eager.EagerDGDiscretization
+    discr: grudge.discretization.DiscretizationCollection
         the discretization to use
     dd_vol: grudge.dof_desc.DOFDesc
         the degree-of-freedom tag associated with the volume discretization.
@@ -87,7 +87,7 @@ def div_operator(discr, dd_vol, dd_faces, v, flux):
     meshmode.dof_array.DOFArray or numpy.ndarray
         the dg divergence operator applied to vector-valued function(s) *v*.
     """
-    return -discr.inverse_mass(
+    # pylint: disable=invalid-unary-operand-type
+    return - op.inverse_mass(discr,
         op.weak_local_div(discr, dd_vol, v)
-        - op.face_mass(discr, dd_faces, flux)
-    )
+        - op.face_mass(discr, dd_faces, flux))

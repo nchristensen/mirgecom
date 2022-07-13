@@ -30,6 +30,8 @@ THE SOFTWARE.
 
 import grudge.op as op
 
+from grudge.dof_desc import DISCR_TAG_BASE
+
 
 def grad_operator(discr, dd_vol, dd_faces, u, flux):
     r"""Compute a DG gradient for the input *u* with flux given by *flux*.
@@ -57,7 +59,8 @@ def grad_operator(discr, dd_vol, dd_faces, u, flux):
         the dg gradient operator applied to *u*
     """
     # pylint: disable=invalid-unary-operand-type
-    return - op.inverse_mass(discr,
+    return -op.inverse_mass(
+        discr, dd_vol.with_discr_tag(DISCR_TAG_BASE),
         op.weak_local_grad(discr, dd_vol, u)
         - op.face_mass(discr, dd_faces, flux))
 
@@ -88,6 +91,7 @@ def div_operator(discr, dd_vol, dd_faces, v, flux):
         the dg divergence operator applied to vector-valued function(s) *v*.
     """
     # pylint: disable=invalid-unary-operand-type
-    return - op.inverse_mass(discr,
+    return -op.inverse_mass(
+        discr, dd_vol.with_discr_tag(DISCR_TAG_BASE),
         op.weak_local_div(discr, dd_vol, v)
         - op.face_mass(discr, dd_faces, flux))

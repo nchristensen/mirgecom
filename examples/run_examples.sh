@@ -13,14 +13,22 @@ echo "*** Running examples in $examples_dir ..."
 failed_examples=""
 succeeded_examples=""
 
-
 if [[ $(hostname) == "porter" ]]; then
     mpi_launcher="bash $examples_dir/scripts/run_gpus_generic.sh"
 else
     mpi_launcher=""
 fi
 
+examples=""
 for example in $examples_dir/*.py
+do
+    example_file=$(basename "$example")
+    examples="$examples $example_file"
+done
+
+cd $examples_dir
+
+for example in $examples
 do
     if [[ "$example" == *"-mpi-lazy.py" ]]
     then
@@ -46,7 +54,8 @@ do
         echo "*** Example $example failed."
         failed_examples="$failed_examples $example"
     fi
-    rm -rf *vtu *sqlite *pkl *-journal restart_data
+    # FIXME: This could delete data from other runs
+    # rm -rf *vtu *sqlite *pkl *-journal restart_data
 done
 ((numtests=numsuccess+numfail))
 echo "*** Done running examples!"

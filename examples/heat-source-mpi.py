@@ -30,7 +30,7 @@ import pyopencl as cl
 from meshmode.mesh import BTAG_ALL, BTAG_NONE  # noqa
 import grudge.op as op
 from grudge.shortcuts import make_visualizer
-from grudge.dof_desc import DTAG_BOUNDARY
+from grudge.dof_desc import BoundaryDomainTag
 from mirgecom.discretization import create_discretization_collection
 from mirgecom.integrators import rk4_step
 from mirgecom.diffusion import (
@@ -126,8 +126,8 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
     nodes = actx.thaw(discr.nodes())
 
     boundaries = {
-        DTAG_BOUNDARY("dirichlet"): DirichletDiffusionBoundary(0.),
-        DTAG_BOUNDARY("neumann"): NeumannDiffusionBoundary(0.)
+        BoundaryDomainTag("dirichlet"): DirichletDiffusionBoundary(0.),
+        BoundaryDomainTag("neumann"): NeumannDiffusionBoundary(0.)
     }
 
     u = discr.zeros(actx)
@@ -181,7 +181,7 @@ def main(actx_class, ctx_factory=cl.create_some_context, use_logmgr=True,
             set_dt(logmgr, dt)
             logmgr.tick_after()
     final_answer = actx.to_numpy(op.norm(discr, u, np.inf))
-    resid = abs(final_answer - 0.00020620711665201585)
+    resid = abs(final_answer - 0.0002062062188374177)
     if resid > 1e-15:
         raise ValueError(f"Run did not produce the expected result {resid=}")
 

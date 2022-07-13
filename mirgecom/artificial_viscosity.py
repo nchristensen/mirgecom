@@ -398,7 +398,7 @@ def smoothness_indicator(discr, u, kappa=1.0, s0=-6.0, volume_dd=DD_VOLUME_ALL):
         )
     else:
         data = []
-        for grp in discr.discr_from_dd("vol").groups:
+        for grp in discr.discr_from_dd(dd_vol).groups:
             ne, ndof = uhat[grp.index].shape
             fp_format = uhat[grp.index].dtype
             data.append(actx.call_loopy(

@@ -70,7 +70,7 @@ def main(actx_class, use_logmgr: bool = False,
     alloc = getattr(actx, "allocator", None)
     use_profiling = actx_class_is_profiling(actx_class)
 
-    dim = 2
+    dim = 3
     nel_1d = 16
     from meshmode.mesh.generation import generate_regular_rect_mesh
 
@@ -79,7 +79,7 @@ def main(actx_class, use_logmgr: bool = False,
         b=(0.5,)*dim,
         nelements_per_axis=(nel_1d,)*dim)
 
-    order = 3
+    order = 1
 
     dcoll = create_discretization_collection(actx, mesh, order=order)
     nodes = actx.thaw(dcoll.nodes())
@@ -177,6 +177,9 @@ if __name__ == "__main__":
                                                     distributed=False,
                                                     profiling=args.profiling,
                                                     numpy=args.numpy)
+
+    #from meshmode.array_context import KernelDumpingFusionContractorArrayContextBase as actx_class
+    from meshmode.array_context import AutotuningFusionContractorArrayContext as actx_class
 
     main(actx_class, use_logmgr=args.log, casename=args.casename)
 

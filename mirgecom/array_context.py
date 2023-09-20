@@ -119,7 +119,11 @@ def initialize_actx(actx_class: Type[ArrayContext], comm: Optional["Comm"]) \
         else:
             return actx_class()
 
-    cl_ctx = cl.create_some_context()
+    #cl_ctx = cl.create_some_context()
+    platforms = cl.get_platforms()
+    cl_ctx = cl.Context(
+            dev_type=cl.device_type.GPU,
+            properties=[(cl.context_properties.PLATFORM, platforms[0])])
     if actx_class_is_profiling(actx_class):
         queue = cl.CommandQueue(cl_ctx,
             properties=cl.command_queue_properties.PROFILING_ENABLE)
